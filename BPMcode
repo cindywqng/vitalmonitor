@@ -1,0 +1,232 @@
+// Include necessary libraries for communication and sensor functions
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+
+// Define OLED display dimensions
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+
+// Define OLED reset pin
+#define OLED_RESET 8
+
+
+// Define the SPI pins for the OLED display
+#define OLED_MOSI 51
+#define OLED_CLK 52
+#define OLED_DC 9
+#define OLED_CS 10
+
+
+// Buzzer and Button Pins
+#define BUZZER_PIN 2
+#define BUTTON_PIN 3
+
+
+// Create an Adafruit_SSD1306 display object using SPI with reset pin
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
+
+
+// Create a sensor object named particleSensor
+MAX30105 particleSensor;
+
+
+// Configuration settings for the sensor:
+const byte SAMPLE_AVERAGE = 4;
+const byte LED_BRIGHTNESS = 60;
+const byte LED_MODE = 3;
+const int SAMPLE_RATE = 200;
+const int PULSE_WIDTH = 69;
+const int ADC_RANGE = 16384;
+
+
+// Heartbeat tracking variables:
+const int BEAT_ARRAY_SIZE = 5;
+unsigned long beatTimes[BEAT_ARRAY_SIZE];
+byte beatIndex = 0;
+byte beatsDetected = 0;
+unsigned long lastBeat = 0;
+unsigned long startTime = 0;
+const unsigned long measurementDuration = 90000;
+bool measurementDone = false;
+int32_t finalBPM = 0;
+bool fingerDetected = false; // Added flag to track finger detection
+
+
+void setup() {
+ // Start serial communication at fast speed
+ Serial.begin(115200);
+ while (!Serial);
+
+
+ // Initialize the OLED display with the reset pin
+ if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+   Serial.println(F("SSD1306 allocation failed"));
+   for (;;);
+ }
+
+
+ // Clear the OLED display buffer
+ display.clearDisplay();
+ display.setTextColor(WHITE);
+ display.setTextSize(1);
+ display.setCursor(0, 0);
+ display.println("Initializing...");
+ display.display();
+
+
+ // Initialize sensor
+ if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+   Serial.println("MAX30105 not found. Check wiring.");
+   while (1);
+ }
+
+
+ particleSensor.setup(LED_BRIGHTNESS, SAMPLE_AVERAGE, LED_MODE, SAMPLE_RATE, PULSE_WIDTH, ADC_RANGE);
+
+
+ // Initialize buzzer and button pins
+ pinMode(BUZZER_PIN, OUTPUT);
+ pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+
+ Serial.println("Place the tip of your index finger on the sensor.");
+ display.clearDisplay();
+ display.setCursor(0, 0);
+ display.println("Place finger...");
+ display.display();
+
+
+ startTime = millis();
+ measurementDone = false;
+ finalBPM = 0;
+ fingerDetected = false; // Initialize fingerDetected flag
+}
+
+
+void loop() {
+ if (!measurementDone) {
+   long irValue = particleSensor.getIR();
+
+
+   Serial.print("IR=");
+   Serial.print(irValue);
+   Serial.print(", Time=");
+   Serial.println(millis());
+
+
+   if (checkForBeat(irValue)) {
+     unsigned long currentBeat = millis();
+     Serial.print("Beat detected at ");
+     Serial.print(currentBeat);
+     Serial.println(" ms");
+
+
+     if (lastBeat != 0) {
+       unsigned long delta = currentBeat - lastBeat;
+
+
+       beatTimes[beatIndex] = delta;
+       beatIndex = (beatIndex + 1) % BEAT_ARRAY_SIZE;
+
+
+       if (beatsDetected < BEAT_ARRAY_SIZE) {
+         beatsDetected++;
+       }
+
+
+       unsigned long sum = 0;
+       for (byte i = 0; i < beatsDetected; i++) {
+         sum += beatTimes[i];
+       }
+       float avgDelta = (float)sum / beatsDetected;
+       float bpm = 60000.0 / avgDelta;
+
+
+       Serial.print("BPM: ");
+       Serial.println(bpm, 1);
+
+
+       finalBPM = bpm; // Store the current BPM
+
+
+       // Display BPM on OLED
+       display.clearDisplay();
+       display.setTextSize(2);
+       display.setCursor(0, 10);
+       display.print("BPM: ");
+       display.print(bpm, 0); // Display BPM as integer
+       display.display();
+     }
+     lastBeat = currentBeat;
+
+
+     if (!fingerDetected) { //if finger is detected for the first time
+       fingerDetected = true;
+       display.clearDisplay();
+       display.setTextSize(1);
+       display.setCursor(0, 0);
+       display.println("Measuring...");
+       display.display();
+     }
+   } else if (lastBeat == 0) {
+     display.clearDisplay();
+     display.setTextSize(1);
+     display.setCursor(0, 0);
+     display.println("Place finger...");
+     display.display();
+   }
+
+
+   if (millis() - startTime >= measurementDuration) {
+     measurementDone = true;
+     Serial.println("Measurement time is up!");
+
+
+     for (int i = 0; i < 3; i++) {
+       digitalWrite(BUZZER_PIN, HIGH);
+       delay(500);
+       digitalWrite(BUZZER_PIN, LOW);
+       delay(500);
+     }
+     // Display final BPM, and CLEAR the rest of the display
+     display.clearDisplay();
+     display.setTextSize(1);
+     display.setCursor(0, 10); // Center the BPM
+     display.print("Final BPM");
+     display.setTextSize(2);
+     display.setCursor(0, 40); // Center the BPM
+     display.print((int)finalBPM);
+     display.display(); // Update the display
+   }
+ }
+
+
+ // Check for button press to reset
+ if (digitalRead(BUTTON_PIN) == LOW) {
+   Serial.println("Button pressed. Restarting measurement.");
+   delay(500);
+   beatIndex = 0;
+   beatsDetected = 0;
+   lastBeat = 0;
+   startTime = millis();
+   measurementDone = false;
+   finalBPM = 0;
+   fingerDetected = false; // Reset fingerDetected flag
+   display.clearDisplay();
+   display.setTextSize(1);
+   display.setCursor(0, 0);
+   display.println("Place finger...");
+   display.display();
+ }
+
+
+ delay(20);
+}
+
+
+
