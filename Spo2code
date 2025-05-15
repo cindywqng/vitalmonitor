@@ -1,0 +1,158 @@
+#include <Wire.h>
+#include "MAX30105.h"
+#include "spo2_algorithm.h"
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+
+// OLED display dimensions
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+
+// OLED reset pin
+#define OLED_RESET 8
+
+
+// OLED SPI pins (adjust if using I2C)
+#define OLED_MOSI 51
+#define OLED_CLK 52
+#define OLED_DC 9
+#define OLED_CS 10
+
+
+// 1.5 minutes in milliseconds
+#define MEASUREMENT_DURATION 90000
+
+
+MAX30105 particleSensor;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS); // SPI OLED
+
+
+#if defined(__AVR_ATmega328P__) || defined(__AVR_ATmega168__)
+uint16_t irBuffer[100];
+uint16_t redBuffer[100];
+#else
+uint32_t irBuffer[100];
+uint32_t redBuffer[100];
+#endif
+
+
+int32_t bufferLength;
+int32_t spo2;
+int8_t validSPO2;
+int32_t heartRate;
+int8_t validHeartRate;
+
+
+unsigned long startTime;
+bool measurementDone = false;
+
+
+void setup() {
+ Serial.begin(115200);
+
+
+ // Initialize OLED display
+ if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for many OLEDs
+   Serial.println(F("SSD1306 allocation failed"));
+   while (1);
+ }
+ display.clearDisplay();
+ display.setTextColor(WHITE);
+ display.setTextSize(1);
+ display.setCursor(0, 0);
+ display.println("Initializing...");
+ display.display();
+
+
+ // Initialize sensor
+ if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+   Serial.println(F("MAX30105 was not found. Please check wiring/power."));
+   while (1);
+ }
+
+
+ byte ledBrightness = 60;
+ byte sampleAverage = 4;
+ byte ledMode = 2;
+ byte sampleRate = 100;
+ int pulseWidth = 411;
+ int adcRange = 4096;
+ particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+
+
+ display.clearDisplay();
+ display.setCursor(0, 0);
+ display.println("Place finger...");
+ display.display();
+
+
+ startTime = millis();
+ measurementDone = false;
+}
+
+
+void loop() {
+ if (!measurementDone) {
+   bufferLength = 100;
+
+
+   // Read 100 samples
+   for (byte i = 0; i < bufferLength; i++) {
+     while (particleSensor.available() == false)
+       particleSensor.check();
+
+
+     redBuffer[i] = particleSensor.getRed();
+     irBuffer[i] = particleSensor.getIR();
+     particleSensor.nextSample();
+
+
+     //Serial output for debugging
+     Serial.print(F("red="));
+     Serial.print(redBuffer[i], DEC);
+     Serial.print(F(", ir="));
+     Serial.println(irBuffer[i], DEC);
+   }
+
+
+   // Calculate heart rate and SpO2
+   maxim_heart_rate_and_oxygen_saturation(irBuffer, bufferLength, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate);
+
+
+   Serial.print(F(", HR="));
+   Serial.print(heartRate, DEC);
+   Serial.print(F(", HRvalid="));
+   Serial.print(validHeartRate, DEC);
+   Serial.print(F(", SPO2="));
+   Serial.print(spo2, DEC);
+   Serial.print(F(", SPO2Valid="));
+   Serial.println(validSPO2, DEC);
+
+
+   if (millis() - startTime >= MEASUREMENT_DURATION) {
+     measurementDone = true;
+
+
+     display.clearDisplay();
+     display.setTextSize(2);
+     display.setCursor(0, 20); // Center text vertically
+     display.print("Final SpO2: ");
+     display.print(spo2);
+     display.print("%");
+     display.display();
+
+
+     Serial.println("Measurement complete.");
+     Serial.print("Final SpO2: ");
+     Serial.print(spo2);
+     Serial.println("%");
+   }
+ }
+ // put a delay in the main loop.  You do not need to constantly poll the sensor
+ delay(100);
+}
+
+
+
